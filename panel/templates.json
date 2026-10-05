@@ -1,0 +1,7 @@
+[
+  {"id":"shell","name":"Shell (Ubuntu 22.04)","image":"ubuntu:22.04","command":"bash","memory_mb":512,"cpus":1,"container_port":null,"env":{}},
+  {"id":"python","name":"Python app / bot","image":"python:3.11-slim","command":"bash -c 'test -f requirements.txt && pip install -r requirements.txt; exec python main.py'","memory_mb":512,"cpus":1,"container_port":null,"env":{"PYTHONUNBUFFERED":"1"}},
+  {"id":"node","name":"Node.js app","image":"node:20-slim","command":"bash -c 'test -f package.json && npm install; exec node index.js'","memory_mb":512,"cpus":1,"container_port":3000,"env":{}},
+  {"id":"minecraft","name":"Minecraft Java","image":"itzg/minecraft-server","command":null,"memory_mb":2048,"cpus":2,"container_port":25565,"env":{"EULA":"TRUE","MEMORY":"1536M"}},
+  {"id":"custom","name":"Custom image","image":"","command":null,"memory_mb":512,"cpus":1,"container_port":null,"env":{}}
+]

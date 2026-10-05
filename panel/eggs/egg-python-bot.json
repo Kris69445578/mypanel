@@ -1,0 +1,145 @@
+{
+    "_comment": "Custom Python Bot Egg — import via Admin > Nests > Import Egg",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-09-21T00:00:00+00:00",
+    "name": "Python Bot (Git Deploy)",
+    "author": "wamitiantony297@gmail.com",
+    "description": "Generic Python bot runner. Pulls source from a Git repo (or uses uploaded files), installs requirements.txt, and runs a chosen Python file on start \u2014 same behaviour as bot-hosting.net style panels.",
+    "features": null,
+    "docker_images": {
+        "Python 3.12": "ghcr.io/parkervcp/yolks:python_3.12",
+        "Python 3.11": "ghcr.io/parkervcp/yolks:python_3.11",
+        "Python 3.10": "ghcr.io/parkervcp/yolks:python_3.10",
+        "Python 3.9": "ghcr.io/parkervcp/yolks:python_3.9"
+    },
+    "file_denylist": [],
+    "startup": "if [[ \"${AUTO_UPDATE}\" == \"1\" ]] && [[ -d .git ]]; then git pull; fi; if [[ -f /home/container/${REQUIREMENTS_FILE} ]]; then pip install --disable-pip-version-check --no-cache-dir --user -r ${REQUIREMENTS_FILE}; fi; if [[ ! -z \"${ADDITIONAL_PYTHON_PACKAGES}\" ]]; then pip install --disable-pip-version-check --no-cache-dir --user ${ADDITIONAL_PYTHON_PACKAGES}; fi; if [[ ! -z \"${START_BASH_FILE}\" ]]; then bash ${START_BASH_FILE}; else python ${BOT_PY_FILE} ${PYTHON_START_FLAGS}; fi;",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"Bot started\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Python Bot Egg - installation script\n# Runs once in a temporary Debian container before first boot.\n\napt update -y\napt install -y git curl ca-certificates\n\ncd /mnt/server || exit 1\n\nif [[ \"${USER_UPLOADED_FILES}\" == \"1\" ]]; then\n    echo \"USER_UPLOADED_FILES=1 -- skipping git clone, expecting files to be uploaded manually via SFTP/file manager.\"\nelse\n    if [[ -z \"${GIT_REPO_ADDRESS}\" ]]; then\n        echo \"ERROR: GIT_REPO_ADDRESS is empty and USER_UPLOADED_FILES is not 1. Nothing to deploy.\"\n        exit 1\n    fi\n\n    REPO_URL=\"${GIT_REPO_ADDRESS}\"\n\n    # Inject auth into the URL if a username + token were provided (private repos)\n    if [[ ! -z \"${GIT_USERNAME}\" ]] && [[ ! -z \"${GIT_ACCESS_TOKEN}\" ]]; then\n        REPO_URL=$(echo \"${GIT_REPO_ADDRESS}\" | sed \"s#https://#https://${GIT_USERNAME}:${GIT_ACCESS_TOKEN}@#\")\n    fi\n\n    echo \"Cloning ${GIT_REPO_ADDRESS} ...\"\n\n    if [[ -z \"${GIT_BRANCH}\" ]]; then\n        git clone \"${REPO_URL}\" .\n    else\n        git clone --branch \"${GIT_BRANCH}\" \"${REPO_URL}\" .\n    fi\nfi\n\nif [[ -f /mnt/server/${REQUIREMENTS_FILE} ]]; then\n    echo \"Found ${REQUIREMENTS_FILE}, it will be installed on first boot.\"\nelse\n    echo \"No ${REQUIREMENTS_FILE} found at repo root -- that's fine if your bot has no extra dependencies.\"\nfi\n\necho \"Install script complete.\"\n",
+            "container": "debian:bullseye-slim",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Git Repo Address",
+            "description": "Git repo to clone, e.g. https://github.com/youruser/your-bot-repo",
+            "env_variable": "GIT_REPO_ADDRESS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Git Branch",
+            "description": "Branch to clone/pull. Leave blank for the repo's default branch.",
+            "env_variable": "GIT_BRANCH",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Git Username",
+            "description": "Username to auth with git (only needed for private repos).",
+            "env_variable": "GIT_USERNAME",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Git Access Token",
+            "description": "Personal access token, used as the password for private repos. Never shared with other users.",
+            "env_variable": "GIT_ACCESS_TOKEN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "User Uploaded Files",
+            "description": "Set to 1 if you are uploading files yourself instead of using a git repo (skips git clone).",
+            "env_variable": "USER_UPLOADED_FILES",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "Pull the latest files on startup when using a GitHub repo (git pull each boot).",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Bot Python File",
+            "description": "The file that starts the bot, e.g. bot.py",
+            "env_variable": "BOT_PY_FILE",
+            "default_value": "bot.py",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Requirements File",
+            "description": "Requirements file to install on boot, if present.",
+            "env_variable": "REQUIREMENTS_FILE",
+            "default_value": "requirements.txt",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Additional Python Packages",
+            "description": "Extra packages to install on boot, space separated.",
+            "env_variable": "ADDITIONAL_PYTHON_PACKAGES",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:1000",
+            "field_type": "text"
+        },
+        {
+            "name": "Python Start Flags",
+            "description": "Flags passed to python when starting the bot, e.g. -O",
+            "env_variable": "PYTHON_START_FLAGS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Start Bash File",
+            "description": "Optional: if set, this bash script is run instead of python directly (e.g. start.sh).",
+            "env_variable": "START_BASH_FILE",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        }
+    ]
+}

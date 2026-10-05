@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyPanel</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.css">
+<style>
+:root{--bg:#0f1218;--card:#181d27;--line:#262d3b;--txt:#e6e9ef;--mut:#8b94a7;--acc:#4f8cff;--ok:#2ecc71;--bad:#e74c3c;--warn:#f1c40f}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px system-ui,sans-serif}
+header{display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{font-size:18px;margin:0;flex:1}header a{color:var(--mut);cursor:pointer;margin-left:12px}header a.on{color:var(--txt)}
+main{max-width:1000px;margin:20px auto;padding:0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:14px}
+button.sec{background:#2a3242}button.bad{background:var(--bad)}button:disabled{opacity:.5}
+input,select,textarea{width:100%;background:#0f1218;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:8px;font:inherit;margin:4px 0 10px}
+textarea{font-family:ui-monospace,monospace}label{font-size:13px;color:var(--mut)}
+table{width:100%;border-collapse:collapse}td,th{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left}
+.badge{padding:2px 8px;border-radius:99px;font-size:12px;background:#2a3242}.running{background:var(--ok);color:#06210f}.exited,.missing,.offline,.install_failed{background:var(--bad)}.starting,.installing{background:var(--warn);color:#2b2400}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.grow{flex:1}.mut{color:var(--mut)}
+.login{max-width:340px;margin:12vh auto}.err{color:var(--bad);min-height:20px}
+.modal{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal .card{width:100%;max-width:520px;max-height:90vh;overflow:auto;margin:0}
+.tabs button{background:none;color:var(--mut);border-bottom:2px solid transparent;border-radius:0}.tabs button.on{color:var(--txt);border-color:var(--acc)}
+.file{padding:8px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:8px}.file:hover{background:#202737}
+#term{background:#000;padding:6px;border-radius:8px;overflow:auto}.hide{display:none}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.js"></script>
+<script>
+const $=(s,r=document)=>r.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let S={token:localStorage.getItem('tok'),user:null,view:'servers',timer:null,ws:null,term:null};
+
+async function api(path,opt={}){
+  const r=await fetch('/api'+path,{method:opt.method||'GET',headers:{'Content-Type':'application/json',...(S.token?{Authorization:'Bearer '+S.token}:{})},body:opt.body?JSON.stringify(opt.body):undefined});
+  if(r.status===401&&S.token&&path!=='/login'){logout();throw new Error('Session expired')}
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:(d.detail?.[0]?.msg||'Request failed'));
+  return d;
+}
+function logout(){localStorage.removeItem('tok');S.token=null;S.user=null;cleanup();render()}
+function cleanup(){clearInterval(S.timer);if(S.ws){S.ws.close();S.ws=null}if(S.term){S.term.dispose();S.term=null}}
+
+async function render(){
+  cleanup();
+  const app=$('#app');
+  if(!S.token){
+    app.innerHTML=`<div class="card login"><h2>MyPanel</h2><label>Username</label><input id="u" autofocus><label>Password</label><input id="p" type="password"><div class="err" id="e"></div><button id="go" style="width:100%">Sign in</button></div>`;
+    const go=async()=>{try{const d=await api('/login',{method:'POST',body:{username:$('#u').value,password:$('#p').value}});S.token=d.token;localStorage.setItem('tok',d.token);render()}catch(e){$('#e').textContent=e.message}};
+    $('#go').onclick=go;$('#p').onkeydown=e=>e.key==='Enter'&&go();return;
+  }
+  try{S.user=await api('/me')}catch{return}
+  app.innerHTML=`<header><h1>MyPanel</h1><a id="n-servers">Servers</a>${S.user.role==='admin'?'<a id="n-users">Users</a>':''}<a id="n-acct">${esc(S.user.username)}</a><a id="n-out">Logout</a></header><main id="main"></main>`;
+  $('#n-servers').onclick=()=>{S.view='servers';render()};
+  if($('#n-users'))$('#n-users').onclick=()=>{S.view='users';render()};
+  $('#n-acct').onclick=()=>{S.view='account';render()};$('#n-out').onclick=logout;
+  const cur=$('#n-'+(S.view.startsWith('server:')?'servers':S.view));if(cur)cur.classList.add('on');
+  if(S.view==='servers')viewServers();else if(S.view==='users')viewUsers();else if(S.view==='account')viewAccount();else viewServer(S.view.slice(7));
+}
+
+async function viewServers(){
+  const m=$('#main');const list=await api('/servers');
+  m.innerHTML=`<div class="row" style="margin-bottom:12px"><h2 class="grow" style="margin:0">Servers</h2>${S.user.role==='admin'?'<button id="new">+ New server</button>':''}</div>
+  <div class="card"><table><tr><th>Name</th><th>Egg / Image</th><th>Owner</th><th>Status</th></tr>${list.map(s=>`<tr style="cursor:pointer" data-n="${esc(s.name)}"><td>${esc(s.name)}</td><td class="mut">${esc(s.egg||s.image)}</td><td class="mut">${esc(s.owner||'-')}</td><td><span class="badge ${esc(s.status)}">${esc(s.status)}</span></td></tr>`).join('')||'<tr><td class="mut">No servers yet.</td></tr>'}</table></div>`;
+  m.querySelectorAll('tr[data-n]').forEach(r=>r.onclick=()=>{S.view='server:'+r.dataset.n;render()});
+  if($('#new'))$('#new').onclick=newServerModal;
+}
+
+async function newServerModal(){
+  const [tpls,users,eggs]=await Promise.all([api('/templates'),api('/users'),api('/eggs')]);
+  const d=document.createElement('div');d.className='modal';
+  d.innerHTML=`<div class="card"><h3>New server</h3>
+  <label>Type</label><select id="t">${eggs.map((g,i)=>`<option value="e${i}">Egg: ${esc(g.name)}</option>`).join('')}${tpls.map((t,i)=>`<option value="t${i}">${esc(t.name)}</option>`).join('')}</select>
+  <label>Name (lowercase, digits, dashes)</label><input id="n">
+  <div id="eggbox"><div id="egginfo" class="mut" style="margin-bottom:8px"></div><label>Docker image</label><select id="ei"></select><div id="vars"></div></div>
+  <div id="tplbox"><label>Docker image</label><input id="i"><label>Command (optional)</label><input id="c"><label>Container port</label><input id="cp" type="number"><label>Environment (KEY=VALUE per line)</label><textarea id="env" rows="3"></textarea></div>
+  <div class="row"><div class="grow"><label>Memory (MB)</label><input id="m" type="number"></div><div class="grow"><label>CPUs</label><input id="cpu" type="number" step="0.5"></div></div>
+  <label>Host port (optional)</label><input id="hp" type="number">
+  <label>Owner</label><select id="o">${users.map(u=>`<option ${u.username===S.user.username?'selected':''}>${esc(u.username)}</option>`).join('')}</select>
+  <div class="err" id="e"></div><div class="row"><button id="ok">Create</button><button class="sec" id="x">Cancel</button></div></div>`;
+  document.body.appendChild(d);
+  const fill=()=>{
+    const v=$('#t',d).value,isEgg=v[0]==='e',idx=+v.slice(1);
+    $('#eggbox',d).classList.toggle('hide',!isEgg);$('#tplbox',d).classList.toggle('hide',isEgg);
+    if(isEgg){
+      const g=eggs[idx];$('#egginfo',d).textContent=g.description;
+      $('#ei',d).innerHTML=Object.entries(g.docker_images).map(([l,im])=>`<option value="${esc(im)}">${esc(l)}</option>`).join('');
+      $('#vars',d).innerHTML=g.variables.map(x=>`<label>${esc(x.name)} <span class="mut">(${esc(x.env_variable)})</span></label><div class="mut" style="font-size:12px">${esc(x.description)}</div><input data-var="${esc(x.env_variable)}" type="${x.user_viewable?'text':'password'}" value="${esc(x.default_value)}" autocomplete="off">`).join('');
+      $('#m',d).value=512;$('#cpu',d).value=1;
+    }else{
+      const t=tpls[idx];$('#i',d).value=t.image;$('#c',d).value=t.command||'';$('#m',d).value=t.memory_mb;$('#cpu',d).value=t.cpus;$('#cp',d).value=t.container_port||'';$('#env',d).value=Object.entries(t.env).map(([k,v])=>k+'='+v).join('\n');
+    }
+  };
+  $('#t',d).onchange=fill;fill();$('#x',d).onclick=()=>d.remove();
+  $('#ok',d).onclick=async()=>{
+    const v=$('#t',d).value,isEgg=v[0]==='e';
+    const body={name:$('#n',d).value,memory_mb:+$('#m',d).value,cpus:+$('#cpu',d).value,port:+$('#hp',d).value||null,owner:$('#o',d).value};
+    if(isEgg){
+      body.egg=eggs[+v.slice(1)].id;body.image=$('#ei',d).value;body.variables={};
+      d.querySelectorAll('[data-var]').forEach(i=>body.variables[i.dataset.var]=i.value);
+    }else{
+      const env={};$('#env',d).value.split('\n').forEach(l=>{const i=l.indexOf('=');if(i>0)env[l.slice(0,i).trim()]=l.slice(i+1).trim()});
+      Object.assign(body,{image:$('#i',d).value,command:$('#c',d).value||null,container_port:+$('#cp',d).value||null,env});
+    }
+    $('#ok',d).disabled=true;$('#e',d).textContent=isEgg?'Creating... the install script runs in the background':'Creating (image pull can take a while)...';
+    try{await api('/servers',{method:'POST',body});d.remove();if(isEgg){S.view='server:'+body.name}render()}
+    catch(e){$('#e',d).textContent=e.message;$('#ok',d).disabled=false}
+  };
+}
+
+async function viewServer(name){
+  const m=$('#main');
+  let info;try{info=await api('/servers/'+name)}catch(e){m.textContent=e.message;return}
+  const isEgg=!!info.egg,isAdmin=S.user.role==='admin';
+  m.innerHTML=`<div class="row" style="margin-bottom:12px"><h2 class="grow" style="margin:0">${esc(name)} <span class="badge" id="st">...</span></h2>
+  <button id="start">Start</button><button class="sec" id="restart">Restart</button><button class="sec" id="stop">Stop</button><button class="bad" id="kill">Kill</button>${isAdmin&&isEgg?'<button class="sec" id="reinstall">Reinstall</button>':''}${isAdmin?'<button class="bad" id="del">Delete</button>':''}</div>
+  <div class="card row"><div class="grow">CPU <b id="cpu">-</b></div><div class="grow">Memory <b id="mem">-</b></div>${isEgg?`<div class="grow mut">${esc(info.egg_name||info.egg)}</div>`:''}</div>
+  <div id="err" style="color:var(--bad);margin-bottom:8px"></div>
+  <div class="tabs"><button id="t1" class="on">Console</button><button id="t2">Files</button>${isEgg?'<button id="t3">Startup</button>':''}</div>
+  <div class="card" id="p1"><div id="term"></div></div><div class="card hide" id="p2"></div><div class="card hide" id="p3"></div>`;
+  let lastTry=0;
+  const power=async a=>{try{await api(`/servers/${name}/power/${a}`,{method:'POST'});setTimeout(()=>{poll();if(a!=='stop'&&a!=='kill')connect()},800)}catch(e){alert(e.message)}};
+  ['start','restart','stop','kill'].forEach(a=>$('#'+a).onclick=()=>power(a));
+  if($('#reinstall'))$('#reinstall').onclick=async()=>{if(confirm('Run the egg install script again? Your files are kept.')){try{await api(`/servers/${name}/reinstall`,{method:'POST'});setTimeout(()=>{poll();connect()},600)}catch(e){alert(e.message)}}};
+  if($('#del'))$('#del').onclick=async()=>{if(confirm('Delete this server?')){const purge=confirm('Also delete its files? OK = delete files, Cancel = keep files');await api(`/servers/${name}?purge=${purge}`,{method:'DELETE'});S.view='servers';render()}};
+  const tabs=[1,2,3].filter(n=>$('#t'+n));
+  const show=n=>{tabs.forEach(k=>{$('#p'+k).classList.toggle('hide',k!==n);$('#t'+k).classList.toggle('on',k===n)});if(n===2)browse(name,'');if(n===3)startupTab(name)};
+  tabs.forEach(n=>$('#t'+n).onclick=()=>show(n));
+  const poll=async()=>{try{
+    const s=await api(`/servers/${name}/stats`);
+    $('#st').textContent=s.status.replace('_',' ');$('#st').className='badge '+s.status;
+    $('#cpu').textContent=s.cpu_percent+'%';$('#mem').textContent=s.mem_mb+' / '+s.mem_limit_mb+' MB';
+    $('#err').textContent=s.error||'';
+    if(['running','starting','installing'].includes(s.status)&&(!S.ws||S.ws.readyState>1)&&Date.now()-lastTry>2500)connect();
+  }catch{}};
+  poll();S.timer=setInterval(poll,3000);
+  S.term=new Terminal({cols:100,rows:28,convertEol:false,cursorBlink:true,theme:{background:'#000'}});S.term.open($('#term'));
+  const connect=()=>{
+    lastTry=Date.now();
+    if(S.ws)S.ws.close();S.term.reset();
+    const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+`/api/servers/${name}/console?token=${encodeURIComponent(S.token)}`);
+    ws.onmessage=e=>S.term.write(e.data);S.ws=ws;
+  };
+  S.term.onData(d=>{if(S.ws&&S.ws.readyState===1)S.ws.send(d)});
+  connect();
+}
+
+async function startupTab(name){
+  const p=$('#p3');
+  try{
+    const info=await api('/servers/'+name);
+    p.innerHTML=`<div class="mut" style="margin-bottom:10px">Changes apply the next time the server starts.</div>${info.variables.map(v=>`<label>${esc(v.name)} <span class="mut">(${esc(v.env_variable)})</span></label><div class="mut" style="font-size:12px">${esc(v.description)}</div><input data-var="${esc(v.env_variable)}" type="${v.secret?'password':'text'}" value="${esc(v.value)}" autocomplete="off" ${v.editable?'':'disabled'}>`).join('')}<div class="err" id="ve"></div><button id="vs">Save variables</button>`;
+    $('#vs').onclick=async()=>{
+      const variables={};p.querySelectorAll('[data-var]:not([disabled])').forEach(i=>variables[i.dataset.var]=i.value);
+      try{await api(`/servers/${name}/variables`,{method:'PUT',body:{variables}});$('#ve').style.color='var(--ok)';$('#ve').textContent='Saved. Restart the server to apply.'}
+      catch(e){$('#ve').style.color='var(--bad)';$('#ve').textContent=e.message}
+    };
+  }catch(e){p.textContent=e.message}
+}
+
+async function browse(name,path){
+  const p=$('#p2');
+  try{
+    const items=await api(`/servers/${name}/files?path=${encodeURIComponent(path)}`);
+    const up=path.split('/').slice(0,-1).join('/');
+    p.innerHTML=`<div class="mut" style="margin-bottom:8px">/${esc(path)}</div>${path?'<div class="file" id="up">⬆ ..</div>':''}${items.map(i=>`<div class="file" data-n="${esc(i.name)}" data-d="${i.is_dir?1:0}">${i.is_dir?'📁':'📄'} <span class="grow">${esc(i.name)}</span><span class="mut">${i.is_dir?'':i.size+' B'}</span></div>`).join('')||'<div class="mut">Empty</div>'}<div class="row" style="margin-top:10px"><button class="sec" id="nf">+ New file</button></div>`;
+    if($('#up'))$('#up').onclick=()=>browse(name,up);
+    p.querySelectorAll('.file[data-n]').forEach(f=>f.onclick=()=>{const np=(path?path+'/':'')+f.dataset.n;f.dataset.d==='1'?browse(name,np):edit(name,np,path)});
+    $('#nf').onclick=()=>{const n=prompt('File name');if(n)edit(name,(path?path+'/':'')+n,path,true)};
+  }catch(e){p.textContent=e.message}
+}
+async function edit(name,path,back,isNew){
+  const p=$('#p2');let content='';
+  if(!isNew){try{content=(await api(`/servers/${name}/file?path=${encodeURIComponent(path)}`)).content}catch(e){alert(e.message);return}}
+  p.innerHTML=`<div class="mut" style="margin-bottom:8px">/${esc(path)}</div><textarea id="ed" rows="22" spellcheck="false"></textarea><div class="row"><button id="sv">Save</button><button class="sec" id="bk">Back</button><button class="bad" id="rm">Delete</button></div>`;
+  $('#ed').value=content;$('#bk').onclick=()=>browse(name,back);
+  $('#sv').onclick=async()=>{try{await api(`/servers/${name}/file?path=${encodeURIComponent(path)}`,{method:'PUT',body:{content:$('#ed').value}});$('#sv').textContent='Saved ✓'}catch(e){alert(e.message)}};
+  $('#rm').onclick=async()=>{if(confirm('Delete '+path+'?')){await api(`/servers/${name}/file?path=${encodeURIComponent(path)}`,{method:'DELETE'});browse(name,back)}};
+}
+
+async function viewUsers(){
+  const m=$('#main');const us=await api('/users');
+  m.innerHTML=`<h2>Users</h2><div class="card"><table>${us.map(u=>`<tr><td>${esc(u.username)}</td><td class="mut">${esc(u.role)}</td><td style="text-align:right">${u.id===S.user.id?'':`<button class="bad" data-id="${u.id}">Delete</button>`}</td></tr>`).join('')}</table></div>
+  <div class="card"><h3>Add user</h3><label>Username</label><input id="nu"><label>Password (8+ chars)</label><input id="np" type="password"><label>Role</label><select id="nr"><option>user</option><option>admin</option></select><div class="err" id="e"></div><button id="add">Add</button></div>`;
+  m.querySelectorAll('button[data-id]').forEach(b=>b.onclick=async()=>{if(confirm('Delete user?')){await api('/users/'+b.dataset.id,{method:'DELETE'});render()}});
+  $('#add').onclick=async()=>{try{await api('/users',{method:'POST',body:{username:$('#nu').value,password:$('#np').value,role:$('#nr').value}});render()}catch(e){$('#e').textContent=e.message}};
+}
+function viewAccount(){
+  $('#main').innerHTML=`<h2>Account</h2><div class="card"><label>Current password</label><input id="cp" type="password"><label>New password (8+ chars)</label><input id="npw" type="password"><div class="err" id="e"></div><button id="go">Change password</button></div>`;
+  $('#go').onclick=async()=>{try{await api('/me/password',{method:'POST',body:{current:$('#cp').value,new:$('#npw').value}});$('#e').style.color='var(--ok)';$('#e').textContent='Password changed'}catch(e){$('#e').style.color='var(--bad)';$('#e').textContent=e.message}};
+}
+render();
+</script>
+</body>
+</html>
